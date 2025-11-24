@@ -8,26 +8,26 @@ from html.parser import HTMLParser
 
 app = FastAPI(
     title="Backend verifica garanzia",
-    version="3.0.0",
+    version="3.1.0",
 )
 
-# -----------------------------
-# CONFIGURAZIONE LOGIN (ADATTA QUI SE SERVE)
-# -----------------------------
+# ============================
+# CONFIGURAZIONE LOGIN
+# ============================
 
-# TODO: controlla su DevTools qual è l'URL esatto a cui viene fatto il POST di login
-LOGIN_POST_URL = "https://hub.fordtrucks.it/index.php?option=com_users&task=user.login"
+# Pagina che contiene il form di login
+LOGIN_PAGE_URL = "https://hub.fordtrucks.it/"
 
-# TODO: controlla qual è l'URL della pagina di login (quella che mostra il form)
-LOGIN_PAGE_URL = "https://hub.fordtrucks.it/index.php/login"
+# Endpoint POST che esegue il login e imposta i cookie (303 -> page id=1)
+LOGIN_POST_URL = "https://hub.fordtrucks.it/index.php/component/sppagebuilder/"
 
-# TODO: controlla nei "Form Data" del login come si chiamano i campi user/pass
-USERNAME_FIELD = "username"        # es. "username" o "jform[username]"
-PASSWORD_FIELD = "password"        # es. "password" o "jform[password]"
+# Nomi dei campi input del form di login
+USERNAME_FIELD = "username"
+PASSWORD_FIELD = "password"
 
-# -----------------------------
+# ============================
 # SESSIONE HTTP
-# -----------------------------
+# ============================
 
 SESSION = requests.Session()
 SESSION_LOGGED_IN = False  # flag semplice in memoria di processo
@@ -40,7 +40,7 @@ class VerificaRequest(BaseModel):
 class HiddenInputsParser(HTMLParser):
     """
     Parser HTML minimale per recuperare tutti gli <input type="hidden" name="..." value="...">
-    dalla pagina di login (per token CSRF, return, ecc.).
+    dalla pagina di login (token CSRF, return, ecc.).
     """
 
     def __init__(self):
@@ -75,57 +75,62 @@ def login_if_needed() -> None:
     global SESSION_LOGGED_IN
 
     if SESSION_LOGGED_IN:
-        return  # abbiamo già fatto login in questo processo
+        return  # già loggato in questo processo
 
     creds = get_env_credentials()
 
-    # 1) GET pagina di login per recuperare eventuali token hidden
-    headers = {
+    # 1) GET pagina di login per recuperare eventuali campi hidden (token, return, ecc.)
+    headers_get = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    resp_get = SESSION.get(LOGIN_PAGE_URL, headers=headers, timeout=20)
+    resp_get = SESSION.get(LOGIN_PAGE_URL, headers=headers_get, timeout=20)
     resp_get.raise_for_status()
 
     parser = HiddenInputsParser()
     parser.feed(resp_get.text)
-    hidden_fields = parser.hidden_inputs  # token CSRF, return, ecc.
+    hidden_fields = parser.hidden_inputs  # es. option, task, return, token, ...
 
-    # 2) Prepara payload di login
-    form_data = dict(hidden_fields)  # copia
-    # Aggiungiamo i campi username/password con i nomi corretti
+    # 2) Prepara payload del login (hidden + username/password)
+    form_data = dict(hidden_fields)
     form_data[USERNAME_FIELD] = creds["username"]
     form_data[PASSWORD_FIELD] = creds["password"]
 
-    # In Joomla spesso servono anche:
-    # form_data.setdefault("option", "com_users")
-    # form_data.setdefault("task", "user.login")
-    # Ma alcuni siti li hanno già come hidden nella pagina.
-
     headers_post = {
-        "User-Agent": headers["User-Agent"],
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": headers_get["User-Agent"],
+        "Accept": headers_get["Accept"],
         "Origin": "https://hub.fordtrucks.it",
         "Referer": LOGIN_PAGE_URL,
     }
 
-    resp_post = SESSION.post(LOGIN_POST_URL, headers=headers_post, data=form_data, timeout=20)
+    # 3) POST login (requests segue automaticamente il redirect 303)
+    resp_post = SESSION.post(
+        LOGIN_POST_URL,
+        headers=headers_post,
+        data=form_data,
+        timeout=20,
+    )
     resp_post.raise_for_status()
 
-    # Verifichiamo che il cookie joomla_user_state=logged_in sia presente
+    # Controllo soft: cerchiamo il cookie joomla_user_state=logged_in
     cookies_str = "; ".join([f"{c.name}={c.value}" for c in SESSION.cookies])
     if "joomla_user_state=logged_in" not in cookies_str:
-        # fallback soft: consideriamo comunque loggato, ma avvertiamo
-        # In pratica, se le chiamate successive falliscono, vedremo l'errore lì.
-        raise RuntimeError("Login non riuscito: cookie 'joomla_user_state=logged_in' non trovato")
+        raise RuntimeError(
+            "Login non riuscito: cookie 'joomla_user_state=logged_in' non trovato"
+        )
 
     SESSION_LOGGED_IN = True
 
 
+# ============================
+# CHIAMATE AL PORTALE
+# ============================
+
 def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
     """
     Prima chiamata:
-    warranty.getclaimwarrantyinfo -> restituisce targa, rag_sociale, P.IVA, indirizzo, paese...
+    task=warranty.getclaimwarrantyinfo
+    -> restituisce targa, rag_sociale, P.IVA, indirizzo, paese...
     """
     login_if_needed()
 
@@ -143,7 +148,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
-        # NESSUN header Cookie: usa quelli gestiti dalla SESSION
+        # Nessun header Cookie: usa i cookie della SESSION
     }
 
     form_data = {
@@ -196,7 +201,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        # Anche qui niente Cookie: la SESSION se ne occupa
+        # Nessun header Cookie: la SESSION gestisce i cookie
     }
 
     form_data = {
@@ -229,7 +234,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
     data_section: Dict[str, Any] = inner.get("Data") or {}
 
     has_warranty = data_section.get("HAS_WARRANTY")
-    warranty_list = data_section.get("WARRANTY_LIST") or []
+    warranty_list = data_section.get("WARRANTORY_LIST") or data_section.get("WARRANTY_LIST") or []
     first: Optional[Dict[str, Any]] = warranty_list[0] if warranty_list else None
 
     copertura: Dict[str, Any] = {
@@ -272,8 +277,19 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
     }
 
 
+# ============================
+# ENDPOINTS FASTAPI
+# ============================
+
 @app.post("/verifica")
 def verifica_garanzia(request: VerificaRequest) -> Dict[str, Any]:
+    """
+    Endpoint principale:
+    riceve { "telaio": "..." }
+    -> login (se serve)
+    -> chiamata anagrafica + copertura
+    -> ritorna dati pronti per il frontend.
+    """
     telaio = request.telaio.strip()
 
     if not telaio:
