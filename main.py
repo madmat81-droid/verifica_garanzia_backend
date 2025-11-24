@@ -3,8 +3,12 @@ from pydantic import BaseModel
 from typing import Any, Dict, Optional
 import json
 
+<<<<<<< HEAD
 # Importa il login già esistente dal tuo progetto
 from auth import get_auth  # deve essere presente nella stessa repo
+=======
+from auth import get_auth  # auth.py deve essere nella stessa repo
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
 
 app = FastAPI(
     title="Backend verifica garanzia",
@@ -27,20 +31,35 @@ PORTAL_LOGGED_IN = False
 
 def get_portal_session():
     """
+<<<<<<< HEAD
     Usa lo stesso meccanismo del tuo script:
     - get_auth() → (session, authenticate)
     - authenticate(session) fa login e gestisce il CSRF
+=======
+    Usa lo stesso meccanismo del tuo script FT:
+
+        session, authenticate = get_auth()
+        authenticate(session)
+
+    Qui lo facciamo una sola volta per processo e poi riusiamo la sessione.
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
     """
     global PORTAL_SESSION, PORTAL_AUTHENTICATE, PORTAL_LOGGED_IN
 
     if PORTAL_SESSION is None or PORTAL_AUTHENTICATE is None:
+<<<<<<< HEAD
         # get_auth è quello del tuo progetto grande
+=======
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
         sess, authenticate = get_auth()
         PORTAL_SESSION = sess
         PORTAL_AUTHENTICATE = authenticate
 
     if not PORTAL_LOGGED_IN:
+<<<<<<< HEAD
         # Eseguiamo il login una sola volta per processo
+=======
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
         PORTAL_AUTHENTICATE(PORTAL_SESSION)
         PORTAL_LOGGED_IN = True
 
@@ -73,7 +92,11 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
+<<<<<<< HEAD
         # NIENTE Cookie: li porta la sessione autenticata
+=======
+        # Cookie NON necessario qui: la sessione autenticata li ha già
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
     }
 
     form_data = {
@@ -92,7 +115,11 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
     if not data.get("status"):
         raise RuntimeError(f"Portale anagrafica status=false: {data}")
 
+<<<<<<< HEAD
     payload = data.get("data") or {}
+=======
+    payload: Dict[str, Any] = data.get("data") or {}
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
 
     cliente_veicolo = {
         "targa": payload.get("targa"),
@@ -126,7 +153,10 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+<<<<<<< HEAD
         # Anche qui nessun Cookie manuale
+=======
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
     }
 
     form_data = {
@@ -148,6 +178,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         raise RuntimeError(f"Portale copertura status=false: {outer}")
 
     data_str = outer.get("data", "")
+<<<<<<< HEAD
     inner = json.loads(data_str)
 
     # inner = { "Result": {...}, "Data": { "HAS_WARRANTY": true, "WARRANTY_LIST": [ {...} ] } }
@@ -158,6 +189,28 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
     first = warranty_list[0] if warranty_list else None
 
     copertura = {
+=======
+    if not data_str:
+        raise RuntimeError(
+            f"Impossibile decodificare JSON interno copertura: risposta vuota. outer={outer}"
+        )
+
+    try:
+        inner = json.loads(data_str)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Impossibile decodificare JSON interno copertura: {e}: {data_str[:200]}"
+        )
+
+    # inner = { "Result": {...}, "Data": { "HAS_WARRANTY": true, "WARRANTY_LIST": [ {...} ] } }
+    data_section: Dict[str, Any] = inner.get("Data") or {}
+
+    has_warranty = data_section.get("HAS_WARRANTY")
+    warranty_list = data_section.get("WARRANTY_LIST") or []
+    first: Optional[Dict[str, Any]] = warranty_list[0] if warranty_list else None
+
+    copertura: Dict[str, Any] = {
+>>>>>>> fb9e54b (Backend con auth.get_auth e login automatico)
         "HAS_WARRANTY": has_warranty,
     }
 
@@ -203,6 +256,13 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
 
 @app.post("/verifica")
 def verifica_garanzia(request: VerificaRequest) -> Dict[str, Any]:
+    """
+    Endpoint principale:
+    riceve { "telaio": "..." }
+    -> login (se serve) tramite auth.get_auth
+    -> chiamata anagrafica + copertura
+    -> ritorna dati pronti per il frontend.
+    """
     telaio = request.telaio.strip()
 
     if not telaio:
