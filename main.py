@@ -8,15 +8,15 @@ from html.parser import HTMLParser
 
 app = FastAPI(
     title="Backend verifica garanzia",
-    version="3.1.0",
+    version="4.0.0",
 )
 
 # ============================
 # CONFIGURAZIONE LOGIN
 # ============================
 
-# Pagina che contiene il form di login
-LOGIN_PAGE_URL = "https://hub.fordtrucks.it/"
+# Pagina che contiene il form di login (dove c'è username/password)
+LOGIN_PAGE_URL = "https://hub.fordtrucks.it/index.php?option=com_sppagebuilder&view=page&id=1"
 
 # Endpoint POST che esegue il login e imposta i cookie (303 -> page id=1)
 LOGIN_POST_URL = "https://hub.fordtrucks.it/index.php/component/sppagebuilder/"
@@ -79,7 +79,7 @@ def login_if_needed() -> None:
 
     creds = get_env_credentials()
 
-    # 1) GET pagina di login per recuperare eventuali campi hidden (token, return, ecc.)
+    # 1) GET pagina di login per recuperare i campi hidden (option, task, return, token, ecc.)
     headers_get = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -91,7 +91,7 @@ def login_if_needed() -> None:
     parser.feed(resp_get.text)
     hidden_fields = parser.hidden_inputs  # es. option, task, return, token, ...
 
-    # 2) Prepara payload del login (hidden + username/password)
+    # 2) Prepara payload del login: hidden + username/password
     form_data = dict(hidden_fields)
     form_data[USERNAME_FIELD] = creds["username"]
     form_data[PASSWORD_FIELD] = creds["password"]
@@ -112,7 +112,7 @@ def login_if_needed() -> None:
     )
     resp_post.raise_for_status()
 
-    # Controllo soft: cerchiamo il cookie joomla_user_state=logged_in
+    # Controllo: cerchiamo il cookie joomla_user_state=logged_in
     cookies_str = "; ".join([f"{c.name}={c.value}" for c in SESSION.cookies])
     if "joomla_user_state=logged_in" not in cookies_str:
         raise RuntimeError(
@@ -148,7 +148,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
-        # Nessun header Cookie: usa i cookie della SESSION
+        # niente Cookie qui: la SESSION porta già i cookie di login
     }
 
     form_data = {
@@ -201,7 +201,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        # Nessun header Cookie: la SESSION gestisce i cookie
+        # niente Cookie: la SESSION li ha già
     }
 
     form_data = {
@@ -234,7 +234,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
     data_section: Dict[str, Any] = inner.get("Data") or {}
 
     has_warranty = data_section.get("HAS_WARRANTY")
-    warranty_list = data_section.get("WARRANTORY_LIST") or data_section.get("WARRANTY_LIST") or []
+    warranty_list = data_section.get("WARRANTY_LIST") or []
     first: Optional[Dict[str, Any]] = warranty_list[0] if warranty_list else None
 
     copertura: Dict[str, Any] = {
@@ -283,13 +283,6 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
 
 @app.post("/verifica")
 def verifica_garanzia(request: VerificaRequest) -> Dict[str, Any]:
-    """
-    Endpoint principale:
-    riceve { "telaio": "..." }
-    -> login (se serve)
-    -> chiamata anagrafica + copertura
-    -> ritorna dati pronti per il frontend.
-    """
     telaio = request.telaio.strip()
 
     if not telaio:
