@@ -1,125 +1,50 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
-import os
 import json
-import requests
-from html.parser import HTMLParser
+
+# Importa il login già esistente dal tuo progetto
+from auth import get_auth  # deve essere presente nella stessa repo
 
 app = FastAPI(
     title="Backend verifica garanzia",
-    version="4.0.0",
+    version="6.0.0",
 )
-
-# ============================
-# CONFIGURAZIONE LOGIN
-# ============================
-
-# Pagina che contiene il form di login (dove c'è username/password)
-LOGIN_PAGE_URL = "https://hub.fordtrucks.it/index.php?option=com_sppagebuilder&view=page&id=1"
-
-# Endpoint POST che esegue il login e imposta i cookie (303 -> page id=1)
-LOGIN_POST_URL = "https://hub.fordtrucks.it/index.php/component/sppagebuilder/"
-
-# Nomi dei campi input del form di login
-USERNAME_FIELD = "username"
-PASSWORD_FIELD = "password"
-
-# ============================
-# SESSIONE HTTP
-# ============================
-
-SESSION = requests.Session()
-SESSION_LOGGED_IN = False  # flag semplice in memoria di processo
 
 
 class VerificaRequest(BaseModel):
     telaio: str
 
 
-class HiddenInputsParser(HTMLParser):
+# ============================
+# SESSIONE PORTALE (RIUSO auth.get_auth)
+# ============================
+
+PORTAL_SESSION = None
+PORTAL_AUTHENTICATE = None
+PORTAL_LOGGED_IN = False
+
+
+def get_portal_session():
     """
-    Parser HTML minimale per recuperare tutti gli <input type="hidden" name="..." value="...">
-    dalla pagina di login (token CSRF, return, ecc.).
+    Usa lo stesso meccanismo del tuo script:
+    - get_auth() → (session, authenticate)
+    - authenticate(session) fa login e gestisce il CSRF
     """
+    global PORTAL_SESSION, PORTAL_AUTHENTICATE, PORTAL_LOGGED_IN
 
-    def __init__(self):
-        super().__init__()
-        self.hidden_inputs: Dict[str, str] = {}
+    if PORTAL_SESSION is None or PORTAL_AUTHENTICATE is None:
+        # get_auth è quello del tuo progetto grande
+        sess, authenticate = get_auth()
+        PORTAL_SESSION = sess
+        PORTAL_AUTHENTICATE = authenticate
 
-    def handle_starttag(self, tag, attrs):
-        if tag.lower() != "input":
-            return
-        attr_dict = dict(attrs)
-        if attr_dict.get("type") != "hidden":
-            return
-        name = attr_dict.get("name")
-        value = attr_dict.get("value", "")
-        if name:
-            self.hidden_inputs[name] = value
+    if not PORTAL_LOGGED_IN:
+        # Eseguiamo il login una sola volta per processo
+        PORTAL_AUTHENTICATE(PORTAL_SESSION)
+        PORTAL_LOGGED_IN = True
 
-
-def get_env_credentials() -> Dict[str, str]:
-    user = os.environ.get("FORD_USERNAME", "").strip()
-    pwd = os.environ.get("FORD_PASSWORD", "").strip()
-    if not user or not pwd:
-        raise RuntimeError("FORD_USERNAME o FORD_PASSWORD non impostate su Render")
-    return {"username": user, "password": pwd}
-
-
-def login_if_needed() -> None:
-    """
-    Se non siamo loggati, esegue il login al portale Ford.
-    Usa SESSION per memorizzare i cookie.
-    """
-    global SESSION_LOGGED_IN
-
-    if SESSION_LOGGED_IN:
-        return  # già loggato in questo processo
-
-    creds = get_env_credentials()
-
-    # 1) GET pagina di login per recuperare i campi hidden (option, task, return, token, ecc.)
-    headers_get = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    resp_get = SESSION.get(LOGIN_PAGE_URL, headers=headers_get, timeout=20)
-    resp_get.raise_for_status()
-
-    parser = HiddenInputsParser()
-    parser.feed(resp_get.text)
-    hidden_fields = parser.hidden_inputs  # es. option, task, return, token, ...
-
-    # 2) Prepara payload del login: hidden + username/password
-    form_data = dict(hidden_fields)
-    form_data[USERNAME_FIELD] = creds["username"]
-    form_data[PASSWORD_FIELD] = creds["password"]
-
-    headers_post = {
-        "User-Agent": headers_get["User-Agent"],
-        "Accept": headers_get["Accept"],
-        "Origin": "https://hub.fordtrucks.it",
-        "Referer": LOGIN_PAGE_URL,
-    }
-
-    # 3) POST login (requests segue automaticamente il redirect 303)
-    resp_post = SESSION.post(
-        LOGIN_POST_URL,
-        headers=headers_post,
-        data=form_data,
-        timeout=20,
-    )
-    resp_post.raise_for_status()
-
-    # Controllo: cerchiamo il cookie joomla_user_state=logged_in
-    cookies_str = "; ".join([f"{c.name}={c.value}" for c in SESSION.cookies])
-    if "joomla_user_state=logged_in" not in cookies_str:
-        raise RuntimeError(
-            "Login non riuscito: cookie 'joomla_user_state=logged_in' non trovato"
-        )
-
-    SESSION_LOGGED_IN = True
+    return PORTAL_SESSION
 
 
 # ============================
@@ -132,7 +57,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
     task=warranty.getclaimwarrantyinfo
     -> restituisce targa, rag_sociale, P.IVA, indirizzo, paese...
     """
-    login_if_needed()
+    session = get_portal_session()
 
     url = (
         "https://hub.fordtrucks.it/index.php/index.php"
@@ -148,7 +73,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
-        # niente Cookie qui: la SESSION porta già i cookie di login
+        # NIENTE Cookie: li porta la sessione autenticata
     }
 
     form_data = {
@@ -159,7 +84,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
         "jform[telaio]": telaio,
     }
 
-    resp = SESSION.post(url, headers=headers, data=form_data, timeout=20)
+    resp = session.post(url, headers=headers, data=form_data, timeout=20)
     resp.raise_for_status()
 
     data = resp.json()  # { "status": true, "data": { ... } }
@@ -167,7 +92,7 @@ def chiamata_anagrafica(telaio: str) -> Dict[str, Any]:
     if not data.get("status"):
         raise RuntimeError(f"Portale anagrafica status=false: {data}")
 
-    payload: Dict[str, Any] = data.get("data") or {}
+    payload = data.get("data") or {}
 
     cliente_veicolo = {
         "targa": payload.get("targa"),
@@ -190,7 +115,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
     task=warranty_telaio_search&format=json
     -> restituisce struttura con HAS_WARRANTY e WARRANTY_LIST.
     """
-    login_if_needed()
+    session = get_portal_session()
 
     url = "https://hub.fordtrucks.it/index.php/index.php"
 
@@ -201,7 +126,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         "Origin": "https://hub.fordtrucks.it",
         "Referer": "https://hub.fordtrucks.it/index.php/garanzie",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        # niente Cookie: la SESSION li ha già
+        # Anche qui nessun Cookie manuale
     }
 
     form_data = {
@@ -213,7 +138,7 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         "telaio": telaio,
     }
 
-    resp = SESSION.post(url, headers=headers, data=form_data, timeout=20)
+    resp = session.post(url, headers=headers, data=form_data, timeout=20)
     resp.raise_for_status()
 
     outer = resp.json()
@@ -223,21 +148,16 @@ def chiamata_copertura(telaio: str) -> Dict[str, Any]:
         raise RuntimeError(f"Portale copertura status=false: {outer}")
 
     data_str = outer.get("data", "")
-    try:
-        inner = json.loads(data_str)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"Impossibile decodificare JSON interno copertura: {e}: {data_str[:200]}"
-        )
+    inner = json.loads(data_str)
 
     # inner = { "Result": {...}, "Data": { "HAS_WARRANTY": true, "WARRANTY_LIST": [ {...} ] } }
-    data_section: Dict[str, Any] = inner.get("Data") or {}
+    data_section = inner.get("Data") or {}
 
     has_warranty = data_section.get("HAS_WARRANTY")
     warranty_list = data_section.get("WARRANTY_LIST") or []
-    first: Optional[Dict[str, Any]] = warranty_list[0] if warranty_list else None
+    first = warranty_list[0] if warranty_list else None
 
-    copertura: Dict[str, Any] = {
+    copertura = {
         "HAS_WARRANTY": has_warranty,
     }
 
