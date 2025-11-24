@@ -1,12 +1,12 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import os
 import requests
 
 app = FastAPI(
     title="Backend verifica garanzia",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 # Sessione HTTP riutilizzabile per le chiamate al portale
@@ -21,6 +21,7 @@ def chiama_portale_ford(telaio: str) -> Dict[str, Any]:
     """
     Esegue la stessa chiamata che fa il portale Ford quando clicchi 'Verifica garanzia'.
     Usa il cookie di sessione preso dalla variabile d'ambiente FORD_COOKIE.
+    Ritorna un dizionario "pulito" con i campi principali.
     """
 
     # URL esatto preso da DevTools
@@ -64,17 +65,33 @@ def chiama_portale_ford(telaio: str) -> Dict[str, Any]:
     resp = SESSION.post(url, headers=headers, data=form_data, timeout=20)
     resp.raise_for_status()
 
-    # Il server dichiara text/html; proviamo JSON, altrimenti ritorniamo il testo grezzo
-    try:
-        return {
-            "raw_type": "json",
-            "raw": resp.json(),
-        }
-    except ValueError:
-        return {
-            "raw_type": "text",
-            "raw": resp.text,
-        }
+    # Il server risponde JSON del tipo:
+    # { "status": true, "data": { ... } }
+    data = resp.json()
+
+    status_ok: bool = bool(data.get("status"))
+    payload: Optional[Dict[str, Any]] = data.get("data") or {}
+
+    if not status_ok:
+        # Se il portale indica errore, ritorniamo comunque qualcosa di sensato
+        raise RuntimeError(f"Portale ha risposto status=false: {data}")
+
+    # Estraiamo i campi che ti servono
+    result = {
+        "targa": payload.get("targa"),
+        "telaio": payload.get("telaio"),
+        "rag_sociale": payload.get("rag_sociale"),
+        "piva_prop": payload.get("piva_prop"),
+        "indirizzo": payload.get("indirizzo"),
+        "paese": payload.get("paese"),
+        # Se in futuro la risposta conterrà altri campi, li aggiungiamo qui
+    }
+
+    # Possiamo anche includere il raw per debug, se ti fa comodo:
+    return {
+        "parsed": result,
+        "raw": data,  # JSON completo così com'è arrivato dal portale
+    }
 
 
 @app.post("/verifica")
@@ -82,7 +99,7 @@ def verifica_garanzia(request: VerificaRequest) -> Dict[str, Any]:
     """
     Endpoint principale: riceve un JSON tipo:
       { "telaio": "NM0KCXTP6KPK96400" }
-    chiama il portale Ford e restituisce la risposta grezza.
+    chiama il portale Ford e restituisce i campi principali già puliti.
     """
     telaio = request.telaio.strip()
 
@@ -93,11 +110,10 @@ def verifica_garanzia(request: VerificaRequest) -> Dict[str, Any]:
         dati_portale = chiama_portale_ford(telaio)
         return {
             "success": True,
-            "data": dati_portale,
+            "data": dati_portale["parsed"],
+            "debug_raw": dati_portale["raw"],  # se non ti serve, puoi toglierlo
         }
     except Exception as e:
-        # In futuro possiamo migliorare il logging,
-        # per ora ritorniamo l'errore in chiaro.
         return {
             "success": False,
             "error": str(e),
