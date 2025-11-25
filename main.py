@@ -21,7 +21,7 @@ app = FastAPI(
 # Sostituisci questo elenco con il dominio reale del tuo frontend
 # es: ["https://ft-hub-797eb.web.app"] o simile
 origins = [
-    "*",  # se vuoi restringerlo, metti qui il dominio esatto del portale
+    "https://ftaftersales-del.github.io"
 ]
 
 app.add_middleware(
@@ -31,7 +31,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 class VerificaRequest(BaseModel):
     telaio: str
