@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 import json
@@ -7,9 +8,28 @@ import string
 
 from auth import get_auth  # auth.py deve essere nella stessa repo
 
+
 app = FastAPI(
     title="Backend verifica garanzia",
-    version="6.1.0",
+    version="6.1.1",
+)
+
+# ============================
+# CORS (per chiamate da FTVIN.html)
+# ============================
+
+# Sostituisci questo elenco con il dominio reale del tuo frontend
+# es: ["https://ft-hub-797eb.web.app"] o simile
+origins = [
+    "*",  # se vuoi restringerlo, metti qui il dominio esatto del portale
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -43,7 +63,7 @@ class HiddenInputsParser(HTMLParser):
             return
         attr_dict = dict(attrs)
         if attr_dict.get("type") != "hidden":
-            return
+          return
         name = attr_dict.get("name")
         value = attr_dict.get("value", "")
         if name:
